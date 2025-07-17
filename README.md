@@ -20,47 +20,11 @@ The plugin is implemented as a self-contained C library that is loaded by MuJoCo
 
 ## 3. Prerequisites
 
-To compile and use this plugin, you will need:
+To use this plugin, you will need:
 
-* **MuJoCo SDK**: Version 3.1.4 or newer.
-* **C/C++ Compiler**:
-    * On Windows: Microsoft Visual C++ (MSVC), available with Visual Studio or VS Build Tools.
-    * On Linux/macOS: GCC or Clang.
 * **Python**: With the `mujoco` package installed (`pip install mujoco`).
 
-## 4. Compilation
-
-The plugin must be compiled into a shared library (`.dll` on Windows, `.so` on Linux, `.dylib` on macOS).
-
-### On Windows (Direct Command)
-
-1.  Open a **Developer Command Prompt for VS**.
-2.  Navigate to the directory containing `anisotropic_joint.c`.
-3.  Run the following command, replacing the path with the correct location of your MuJoCo SDK:
-    ```
-    cl.exe /LD anisotropic_joint.c /I"C:\path\to\your\mujoco-3.1.4-windows-x86_64\include" /link /LIBPATH:"C:\path\to\your\mujoco-3.1.4-windows-x86_64\lib" mujoco.lib
-    ```
-
-### On Linux / macOS (using CMake)
-
-1.  Create a `CMakeLists.txt` file in the same directory as `anisotropic_joint.c` with the following content:
-    ```
-    cmake_minimum_required(VERSION 3.10)
-    project(MuJoCoAnisotropicJoint)
-    find_package(mujoco REQUIRED)
-    add_library(anisotropic_joint SHARED anisotropic_joint.c)
-    target_link_libraries(anisotropic_joint PRIVATE mujoco::mujoco)
-    ```
-2.  Create a build directory and run CMake and the build command:
-    ```
-    mkdir build
-    cd build
-    cmake .. -DMUJOCO_PATH=/path/to/your/mujoco
-    cmake --build . --config Release
-    ```
-3.  Copy the compiled library (`libanisotropic_joint.so` or `.dylib`) from the `build` directory to your project's root.
-
-## 5. Usage in MJCF Models
+## 4. Usage in MJCF Models
 
 To use the plugin, you must first declare it in the `<extension>` section and then attach it as a `<plugin>` actuator targeting a specific `ball` joint.
 
