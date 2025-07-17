@@ -116,6 +116,8 @@ The plugin is configured via key-value pairs. All parameters are optional and de
 
 ## 6. Python Integration
 
+### 6.1. Loading the Plugin
+
 Before loading any model that uses this plugin, you must first load the compiled C library.
 
 ```python
@@ -135,3 +137,41 @@ except Exception as e:
 
 # Now it is safe to load the model
 # model = mujoco.MjModel.from_xml_path(...)
+```
+
+### 6.2. MjSpec Integration
+
+When building a model programmatically using `MjSpec`, you can add and configure the anisotropic joint plugin as follows:
+
+```python
+import mujoco
+import numpy as np
+
+# Assume 'spec' is an existing mujoco.MjSpec object
+# and 'parent_body' is the parent body for the new body with the joint.
+
+# 1. Declare the plugin in the spec
+spec.add_plugin(name="anisotropic_joint", plugin_name="user.joint.anisotropic.advanced")
+
+# 2. Create the body and the ball joint
+new_body = parent_body.add_body(name="my_body")
+ball_joint = new_body.add_joint(name="my_joint", type="ball")
+
+# 3. Create an actuator and attach the plugin to it
+actuator = spec.add_actuator(name="my_actuator")
+actuator.plugin.name = "anisotropic_joint"
+actuator.target = ball_joint
+
+# 4. Configure the plugin's parameters
+actuator.plugin.config = {
+    "k_bend_x": "10.0",
+    "d_bend_x": "0.5",
+    "k_bend_y": "25.0",
+    "d_bend_y": "0.8",
+    "k_tor": "5.0",
+    "d_tor": "0.2"
+}
+
+# Now, when you compile the spec, the anisotropic joint will be active.
+# model = spec.compile()
+```
