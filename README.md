@@ -103,5 +103,4 @@ except Exception as e:
 
 ### 6.2. MjSpec Integration
 
-I am currently unable to get it to run using MjSpec, it appears it may be a low level bug within MjSpec itself.
-
+I am currently unable to get it to run using MjSpec, it appears it may be a low level bug within MjSpec itself as of MuJoCo 3.3.4
