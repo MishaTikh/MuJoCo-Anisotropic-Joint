@@ -1,12 +1,10 @@
 # MuJoCo Plugin: Advanced Anisotropic Ball Joint
 
-This repository contains a high-performance C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for high-fidelity simulations of complex flexible bodies, such as medical catheters, robotic arms, or other objects where bending and twisting behaviors are not uniform.
+This repository contains a C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for high-fidelity simulations of complex flexible bodies, such as medical catheters, robotic arms, or other objects where bending and twisting behaviors are not uniform.
 
 ## 1. Overview
 
 This plugin extends MuJoCo's physics capabilities by providing a custom joint type that can be attached to any `ball` joint in an MJCF model. It replaces the joint's default physics with a custom force model that includes several advanced features, allowing for more realistic and nuanced simulations.
-
-The plugin is implemented as a self-contained C library that is loaded by MuJoCo at runtime, ensuring native performance and stability.
 
 ## 2. Features
 
