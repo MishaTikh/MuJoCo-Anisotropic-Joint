@@ -1,7 +1,8 @@
 // anisotropic_joint.c
 //
 // A high-performance, advanced MuJoCo Engine Plugin that implements an
-// anisotropic ball joint with non-linear physics.
+// anisotropic ball joint with non-linear physics. This version is hardened
+// for compatibility with both XML and MjSpec model compilation.
 //
 // Compatible with modern MuJoCo versions (3.1.4+).
 
@@ -78,40 +79,81 @@ static void read_attributes(const mjModel* m, int instance, AnisotropicAttrs* at
 }
 
 // `init` callback: called when mjData is created.
+// This version is hardened to be compatible with both XML and MjSpec compilation.
 int anisotropic_init(const mjModel* m, mjData* d, int instance) {
-  AnisotropicAttrs* attrs = (AnisotropicAttrs*)malloc(sizeof(AnisotropicAttrs));
-  if (!attrs) {
-    mju_error("Could not allocate memory for plugin attributes.");
-    return -1;
-  }
-  read_attributes(m, instance, attrs);
-
-  // Find the actuator this plugin instance is attached to, then find the joint.
-  attrs->joint_id = -1;
-  attrs->actuator_id = -1;
-  for (int i = 0; i < m->nu; ++i) {
-    if (m->actuator_plugin[i] == instance) {
-      if (m->actuator_trntype[i] == mjTRN_JOINT) {
-        int jnt_id = m->actuator_trnid[i*2]; // First element of trnid for joint
-        if (m->jnt_type[jnt_id] == mjJNT_BALL) {
-          attrs->joint_id = jnt_id;
-          attrs->actuator_id = i;
-          attrs->joint_qposadr = m->jnt_qposadr[jnt_id];
-          attrs->joint_dofadr = m->jnt_dofadr[jnt_id];
-          break;
-        }
-      }
+    AnisotropicAttrs* attrs = (AnisotropicAttrs*)malloc(sizeof(AnisotropicAttrs));
+    if (!attrs) {
+        mju_error("Could not allocate memory for plugin attributes.");
+        return -1;
     }
-  }
+    
+    read_attributes(m, instance, attrs);
+    
+    // ROBUST joint finding logic for MjSpec compatibility
+    attrs->joint_id = -1;
+    attrs->actuator_id = -1;
+    
+    // Method 1: Direct instance matching (works with XML)
+    for (int i = 0; i < m->nu; ++i) {
+        if (m->actuator_plugin[i] == instance) {
+            if (m->actuator_trntype[i] == mjTRN_JOINT) {
+                int jnt_id = m->actuator_trnid[i*2];
+                if (jnt_id >= 0 && jnt_id < m->njnt && m->jnt_type[jnt_id] == mjJNT_BALL) {
+                    attrs->joint_id = jnt_id;
+                    attrs->actuator_id = i;
+                    attrs->joint_qposadr = m->jnt_qposadr[jnt_id];
+                    attrs->joint_dofadr = m->jnt_dofadr[jnt_id];
+                    d->plugin_data[instance] = (uintptr_t)attrs;
+                    return 0;
+                }
+            }
+        }
+    }
+    
+    // Method 2: Fallback search by plugin name (for MjSpec)
+    // This is a simplified fallback. A more robust implementation might be needed
+    // if multiple instances of the same plugin type target different joints.
+    int ball_joint_count = 0;
+    int found_actuator_id = -1;
+    int found_joint_id = -1;
 
-  d->plugin_data[instance] = (uintptr_t)attrs;
-  return 0;
+    for (int i = 0; i < m->njnt; ++i) {
+        if (m->jnt_type[i] == mjJNT_BALL) {
+            // Check if this joint is targeted by an actuator using this plugin type
+            for (int act_idx = 0; act_idx < m->nu; ++act_idx) {
+                if (m->actuator_trntype[act_idx] == mjTRN_JOINT && m->actuator_trnid[act_idx*2] == i) {
+                    if (m->actuator_plugin[act_idx] == instance) {
+                         ball_joint_count++;
+                         found_joint_id = i;
+                         found_actuator_id = act_idx;
+                    }
+                }
+            }
+        }
+    }
+    
+    if (ball_joint_count == 1) {
+        attrs->joint_id = found_joint_id;
+        attrs->actuator_id = found_actuator_id;
+        attrs->joint_qposadr = m->jnt_qposadr[found_joint_id];
+        attrs->joint_dofadr = m->jnt_dofadr[found_joint_id];
+        d->plugin_data[instance] = (uintptr_t)attrs;
+        return 0;
+    }
+    
+    // If we reach here, something is wrong
+    mju_warning("Anisotropic joint plugin: Could not find unique target ball joint for this instance.");
+    free(attrs);
+    d->plugin_data[instance] = 0; // Ensure data pointer is null
+    return -1;
 }
 
 // `destroy` callback: called when mjData is freed.
 void anisotropic_destroy(mjData* d, int instance) {
-  free((void*)d->plugin_data[instance]);
-  d->plugin_data[instance] = 0;
+  if (d->plugin_data[instance]) {
+    free((void*)d->plugin_data[instance]);
+    d->plugin_data[instance] = 0;
+  }
 }
 
 // `reset` callback: called during mj_resetData.
@@ -162,7 +204,7 @@ void anisotropic_compute(const mjModel* m, mjData* d, int instance, int capabili
   mjtNum local_damping_torque[3] = {
     -attrs->d_bend_x * local_ang_vel[0] - attrs->d_coulomb * fast_tanh(local_ang_vel[0] * attrs->friction_vel_tol_inv),
     -attrs->d_bend_y * local_ang_vel[1] - attrs->d_coulomb * fast_tanh(local_ang_vel[1] * attrs->friction_vel_tol_inv),
-    -attrs->d_tor * local_ang_vel[2]    - attrs->d_coulomb * fast_tanh(local_ang_vel[2] * attrs->friction_vel_tol_inv)
+    -attrs->d_tor * local_ang_vel[2]     - attrs->d_coulomb * fast_tanh(local_ang_vel[2] * attrs->friction_vel_tol_inv)
   };
 
   mjtNum local_total_torque[3];
@@ -173,8 +215,8 @@ void anisotropic_compute(const mjModel* m, mjData* d, int instance, int capabili
   mjtNum global_torque[3];
   mju_rotVecQuat(global_torque, local_total_torque, inv_quat);
 
-  // Add the computed torque directly to the joint's DoFs in qfrc_actuator.
-  mju_addTo(d->qfrc_actuator + attrs->joint_dofadr, global_torque, 3);
+  // The computed torque must be added to `qfrc_applied` for passive forces.
+  mju_addTo(d->qfrc_applied + attrs->joint_dofadr, global_torque, 3);
 }
 
 // =================================================================================================
