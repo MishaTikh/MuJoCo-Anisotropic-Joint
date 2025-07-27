@@ -1,206 +1,124 @@
-MuJoCo Plugin: Advanced Anisotropic Ball Joint
-This repository contains a C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for high-fidelity simulations of complex flexible bodies, such as medical catheters, robotic arms, or other objects where bending and twisting behaviors are not uniform.
+# MuJoCo Plugin: Advanced Anisotropic Ball Joint (Cosserat Rod Model)
 
-1. Overview
-This plugin extends MuJoCo's physics capabilities by providing a custom joint type that can be attached to any ball joint in an MJCF model. It replaces the joint's default physics with a custom force model that includes several advanced features, allowing for more realistic and nuanced simulations.
+This repository contains a high-performance C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for high-fidelity simulations of complex flexible bodies, such as medical catheters or soft robots, where physically-accurate bending and twisting behaviors are required.
 
-2. Features
-Anisotropic Bending: The joint can have different stiffness and damping for bending around its local X and Y axes.
+## 1. Overview
 
-Symmetric Bending by Default: If only general bending parameters are provided, they are applied to both X and Y axes for simple, symmetric behavior.
+This plugin extends MuJoCo's physics capabilities by providing a custom force model for any `ball` joint in an MJCF model. It replaces the joint's default stiffness with a custom model based on the **constitutive laws of Cosserat rod theory**. This allows for a more physically-grounded simulation where stiffness is defined by material properties (like `EI` and `GJ`) rather than abstract joint spring coefficients.
 
-Independent Torsion: The joint has separate parameters for twisting (torsion) around its local Z-axis.
+A key feature of this model is the ability to define an **intrinsic curvature**, allowing parts of the model to have a naturally curved or twisted resting shape.
 
-Physically-Accurate Stiffness: The stiffness model uses the joint's true rotation vector, making it physically correct even for large-angle rotations.
+The plugin is implemented as a self-contained C library that is loaded by MuJoCo at runtime, ensuring native performance and stability.
 
-Non-Linear Stiffness Hardening: An optional cubic stiffness term (k_bend_cubic) can be added to make the joint significantly stiffer as it bends further from its resting state.
+## 2. Features
 
-Numerically-Stable Coulomb Friction: An optional dry friction term (d_coulomb) is implemented using a smoothed tanh function to model material hysteresis without causing solver instability or chatter.
+* **Cosserat Rod-Based Stiffness**: The torque at the joint is calculated using the physically-based formula `τ = (B/L) * (κ - κ⁰)`, where `B` is the material stiffness matrix, `L` is the segment length, `κ` is the current curvature, and `κ⁰` is the intrinsic curvature.
+* **Material-Based Parameters**: Instead of defining spring constants in `Nm/rad`, you define the actual engineering properties of your flexible rod:
+    * Bending Stiffness (`EI`) in `Nm²`
+    * Torsional Stiffness (`GJ`) in `Nm²`
+* **Intrinsic Curvature**: Model objects that are naturally curved or twisted by specifying a non-zero resting curvature (`κ⁰`). This is essential for modeling pre-bent catheters or complex biological structures.
+* **Decoupled Damping**: Damping is **not** handled by the plugin. This allows you to use MuJoCo's highly stable native joint damping on the `ball` joint itself, providing a clean separation between stiffness and damping forces.
+* **High Performance**: The C code is optimized to cache joint information on initialization, ensuring minimal overhead during the simulation loop.
 
-High Performance: The C code is optimized by caching joint IDs on initialization and using fast math approximations, making it suitable for simulations with many joints.
+## 3. Prerequisites
 
-MjSpec Compatible: The plugin's initialization logic is hardened to be fully compatible with models compiled from both XML and MjSpec.
+To compile and use this plugin, you will need:
 
-3. Prerequisites
-To use this plugin, you will need:
+* **MuJoCo SDK**: Version 3.1.4 or newer.
+* **C/C++ Compiler**:
+    * On Windows: Microsoft Visual C++ (MSVC), available with Visual Studio or VS Build Tools.
+    * On Linux/macOS: GCC or Clang.
+* **Python**: With the `mujoco` package installed (`pip install mujoco`).
 
-Python: With the mujoco package installed (pip install mujoco).
+## 4. Compilation
 
-A C/C++ compiler to build the plugin source code into a shared library (.dll on Windows, .so on Linux/macOS).
+The plugin must be compiled into a shared library (`.dll` on Windows, `.so` on Linux).
 
-4. Usage in MJCF Models
-To use the plugin, you must first declare it in the <extension> section and then attach it as a <plugin> actuator targeting a specific ball joint.
+### On Windows (Direct Command)
 
-4.1. Configuration Attributes
-The plugin is configured via key-value pairs. All parameters are optional and default to 0.
+1.  Open a **Developer Command Prompt for VS**.
+2.  Navigate to the directory containing `anisotropic_joint.c`.
+3.  Run the following command, replacing the path with the correct location of your MuJoCo SDK:
+    ```shell
+    cl.exe /LD anisotropic_joint.c /I"C:\path\to\your\mujoco-3.3.4-windows-x86_64\include" /link /LIBPATH:"C:\path\to\your\mujoco-3.3.4-windows-x86_64\lib" mujoco.lib
+    ```
 
-Attribute
+## 5. Usage in MJCF Models
 
-Description
+To use the plugin, you must declare it in the `<extension>` section and then attach it as a `<plugin>` actuator targeting a specific `ball` joint.
 
-Units
+### 5.1. Configuration Attributes
 
-k_bend
+The plugin is configured via key-value pairs. All parameters are optional and default to `0`.
 
-Base linear stiffness for bending. Used for both X and Y axes if k_bend_x/k_bend_y are not set.
+| Attribute        | Description                                                                                             | Units   |
+| :--------------- | :------------------------------------------------------------------------------------------------------ | :------ |
+| `B11`, `B22`     | Bending stiffness of the material about the local x and y axes, respectively. This is the **EI** value.   | Nm²     |
+| `B33`            | Torsional stiffness of the material about the local z-axis. This is the **GJ** value.                   | Nm²     |
+| `k0_x`, `k0_y`, `k0_z` | Components of the intrinsic (resting) curvature vector **κ⁰**. Defines the stress-free shape.         | rad     |
+| `segment_length` | The length of the discrete body segment (**L_seg**) that this joint connects. **This is critical** for correct physics. | m       |
 
-Nm/rad
+### 5.2. Example
 
-d_bend
-
-Base viscous damping for bending. Used for both X and Y axes if d_bend_x/d_bend_y are not set.
-
-Nms/rad
-
-k_bend_x
-
-Specific linear stiffness for bending around the local X-axis. Overrides k_bend.
-
-Nm/rad
-
-d_bend_x
-
-Specific viscous damping for bending around the local X-axis. Overrides d_bend.
-
-Nms/rad
-
-k_bend_y
-
-Specific linear stiffness for bending around the local Y-axis. Overrides k_bend.
-
-Nm/rad
-
-d_bend_y
-
-Specific viscous damping for bending around the local Y-axis. Overrides d_bend.
-
-Nms/rad
-
-k_tor
-
-Linear stiffness for torsion (twisting) around the local Z-axis.
-
-Nm/rad
-
-d_tor
-
-Viscous damping for torsion around the local Z-axis.
-
-Nms/rad
-
-k_bend_cubic
-
-Optional non-linear hardening factor. Adds a force proportional to angle³.
-
-Nm/rad³
-
-d_coulomb
-
-Optional constant dry friction force that opposes motion at any velocity.
-
-Nm
-
-friction_vel_tol
-
-Optional velocity tolerance for smoothing the Coulomb friction. Default: 1e-4.
-
-m/s
-
-4.2. Example
+```xml
 <mujoco model="example">
   <extension>
-    <!-- 1. Declare the plugin -->
     <plugin plugin="user.joint.anisotropic.advanced"/>
   </extension>
 
   <worldbody>
     ...
-    <body name="my_body" ...>
-      <joint name="my_joint" type="ball"/>
+    <body name="segment_1" pos="0 0 0">
+      <joint name="J_Seg1" type="ball" damping="5e-5"/> <geom type="capsule" size="0.01 0.05"/>
+      <body name="segment_2" pos="0 0 0.1">
+        ...
+      </body>
     </body>
     ...
   </worldbody>
 
   <actuator>
-    <!-- 2. Attach the plugin to the joint as an actuator -->
-    <plugin joint="my_joint" plugin="user.joint.anisotropic.advanced">
-      <!-- 3. Configure the parameters -->
-      <config key="k_bend_x" value="10.0"/>
-      <config key="d_bend_x" value="0.5"/>
-      <config key="k_bend_y" value="25.0"/> 
-      <config key="d_bend_y" value="0.8"/>
-      <config key="k_tor" value="5.0"/>
-      <config key="d_tor" value="0.2"/>
-    </plugin>
+    <plugin joint="J_Seg1" plugin="user.joint.anisotropic.advanced">
+      <config key="B11" value="0.001"/>            <config key="B22" value="0.001"/>            <config key="B33" value="0.0001"/>           <config key="k0_x" value="0.0"/>             <config key="k0_y" value="0.0"/>
+      <config key="k0_z" value="0.0"/>
+      <config key="segment_length" value="0.1"/>  </plugin>
   </actuator>
 </mujoco>
 
-5. Python Integration
-5.1. Loading the Plugin
-Before loading any model that uses this plugin, you must first load the compiled C library.
+## 6. Python Integration
+Integrating the plugin into a Python application involves two steps: loading the compiled library and generating the correct XML.
+
+### 6.1. Loading the Plugin Library
+Before you can load a model that uses the plugin, you must first load the compiled C library into memory. This should be done once at the start of your application.
+
+Python
 
 import mujoco
 import os
 
 # Path to the compiled library
 plugin_name = 'anisotropic_joint.dll' if os.name == 'nt' else 'libanisotropic_joint.so'
-plugin_path = os.path.join(os.path.dirname(__file__), plugin_name)
 
-# Load the plugin
+# Assume the DLL is in a directory named 'anisotropic_joint' next to your script
+plugin_path = os.path.join(os.getcwd(), 'anisotropic_joint', plugin_name)
+
+# Load the plugin library
 try:
     mujoco.mj_loadPluginLibrary(plugin_path)
-    print("Custom C plugin loaded successfully.")
+    print(f"Custom C plugin loaded successfully from '{plugin_path}'.")
 except Exception as e:
-    print(f"Error loading plugin: {e}")
+    print(f"FATAL: Could not load the custom anisotropic joint plugin.\nError: {e}")
+    # It is recommended to exit if the plugin cannot be loaded
+    # as any model using it will fail to compile.
 
-# Now it is safe to load the model
-# model = mujoco.MjModel.from_xml_path(...)
+# Now it is safe to load any model that uses 'user.joint.anisotropic.advanced'
+# model = mujoco.MjModel.from_xml_string(...)
 
-5.2. MjSpec Integration
-The plugin's initialization logic has been hardened to be fully compatible with models built programmatically using MjSpec. The previous issues related to instance ID mismatches have been resolved.
+### 6.2. Generating the Model
+Your Python code that generates the MJCF model must be updated to:
 
-The key is to correctly define the plugin, create an instance of it on an actuator, and link that actuator to a joint.
+Set a damping value on the <joint> tag itself. This should be calculated based on the critical damping for the joint.
 
-import mujoco
+Add a <plugin> actuator for each joint.
 
-# Assume the plugin library has already been loaded
-# mujoco.mj_loadPluginLibrary(...)
-
-# 1. Create an MjSpec
-spec = mujoco.MjSpec()
-
-# 2. Add the plugin *definition* to the spec.
-# This registers the plugin type with the model.
-plugin_def = spec.add_plugin()
-plugin_def.name = "anisotropic_joint_instance" # A name for this specific definition
-plugin_def.plugin_name = "user.joint.anisotropic.advanced" # The name registered by the C code
-
-# (Create bodies and joints as needed)
-base = spec.worldbody.add_body(name="base")
-body1 = base.add_body(name="body1", pos=[0, 0, 0.1])
-my_joint = body1.add_joint(name="my_joint", type="ball")
-
-# 3. Add an actuator to the spec.
-actuator = spec.add_actuator()
-
-# 4. Configure the actuator to use the plugin.
-# This creates an *instance* of the plugin.
-actuator.plugin.plugin = plugin_def # Link to the definition from step 2
-actuator.plugin.config = {
-    "k_bend": "10.0",
-    "d_bend": "0.5",
-    "k_tor": "5.0",
-    "d_tor": "0.2"
-}
-
-# 5. Link the actuator to the target joint.
-actuator.transmission.joint = my_joint # Link to the joint object
-actuator.transmission.type = mujoco.mjtTransmission.mjTRN_JOINT
-
-# 6. Compile the model
-try:
-    model = spec.compile()
-    print("MjSpec model with custom plugin compiled successfully.")
-except Exception as e:
-    print(f"Error compiling MjSpec model: {e}")
-
+Populate the <config> keys with the correct physical parameters (B11, B33, segment_length, etc.) for each specific joint, as shown in the example above.
