@@ -1,264 +1,188 @@
-// anisotropic_joint.c
+// Copyright 2024. All Rights Reserved.
 //
-// A high-performance, advanced MuJoCo Engine Plugin that implements an
-// anisotropic ball joint with non-linear physics. This version is hardened
-// for compatibility with both XML and MjSpec model compilation.
-//
-// Compatible with modern MuJoCo versions (3.1.4+).
+// This file implements a custom MuJoCo plugin for applying anisotropic stiffness
+// based on a simplified Cosserat rod theory, written in C.
+// This version is adapted to use the actuator-based plugin mechanism for
+// compatibility with older MuJoCo API patterns.
 
+#include <stdlib.h>
 #include <string.h>
-#include <math.h>
-#include <stdio.h>
+#include <stdint.h> // For uintptr_t
+
 #include <mujoco/mujoco.h>
 #include <mujoco/mjplugin.h>
 
-// =================================================================================================
-//  Plugin data structures
-// =================================================================================================
-
-// Struct to hold all configurable parameters and cached data.
+// Structure to hold the plugin's state and parameters
 typedef struct {
-  // Final computed parameters used in physics calculations
-  mjtNum k_bend_x, d_bend_x;
-  mjtNum k_bend_y, d_bend_y;
-  mjtNum k_tor, d_tor;
-  mjtNum k_bend_cubic;
-  mjtNum d_coulomb;
+    // Stiffness matrix diagonal elements [Nm^2]
+    mjtNum B11;  // Bending stiffness about local x-axis
+    mjtNum B22;  // Bending stiffness about local y-axis
+    mjtNum B33;  // Torsional stiffness about local z-axis (twist)
 
-  // Pre-calculated inverse for performance
-  mjtNum friction_vel_tol_inv; 
+    // Intrinsic curvature vector (k0) [rad/m]
+    mjtNum k0[3];
 
-  // Cached data for performance
-  int joint_id;
-  int joint_qposadr;
-  int joint_dofadr;
-  int actuator_id;
-} AnisotropicAttrs;
+    // BUG FIX: Add segment_length to the state
+    mjtNum segment_length;
 
+    // Cached data for performance
+    int joint_id;
+    int joint_qposadr;
+    int joint_dofadr;
+    int actuator_id;
+} AnisotropicJointState;
 
-// =================================================================================================
-//  Plugin callbacks
-// =================================================================================================
-
-// Helper function to safely parse a config attribute.
-static void get_attribute(const char** value, const char* name, const mjModel* m, int instance) {
-  *value = mj_getPluginConfig(m, instance, name);
+// Function to safely parse a numerical attribute from the XML
+static mjtNum get_numeric_attribute(const char* value) {
+    if (!value) {
+        return 0.0;
+    }
+    return strtod(value, NULL);
 }
 
-// Reads all attributes from the MJCF model and applies the default/override logic.
-static void read_attributes(const mjModel* m, int instance, AnisotropicAttrs* attrs) {
-  const char *value;
-  double k_bend = -1, d_bend = -1;
-  double k_bend_x = -1, d_bend_x = -1;
-  double k_bend_y = -1, d_bend_y = -1;
-  double friction_vel_tol = 1e-4;
-
-  // Set defaults
-  memset(attrs, 0, sizeof(AnisotropicAttrs));
-
-  // Read all provided attributes using the helper
-  get_attribute(&value, "k_bend", m, instance); if (value) sscanf(value, "%lf", &k_bend);
-  get_attribute(&value, "d_bend", m, instance); if (value) sscanf(value, "%lf", &d_bend);
-  get_attribute(&value, "k_bend_x", m, instance); if (value) sscanf(value, "%lf", &k_bend_x);
-  get_attribute(&value, "d_bend_x", m, instance); if (value) sscanf(value, "%lf", &d_bend_x);
-  get_attribute(&value, "k_bend_y", m, instance); if (value) sscanf(value, "%lf", &k_bend_y);
-  get_attribute(&value, "d_bend_y", m, instance); if (value) sscanf(value, "%lf", &d_bend_y);
-  get_attribute(&value, "k_tor", m, instance); if (value) sscanf(value, "%lf", &attrs->k_tor);
-  get_attribute(&value, "d_tor", m, instance); if (value) sscanf(value, "%lf", &attrs->d_tor);
-  get_attribute(&value, "k_bend_cubic", m, instance); if (value) sscanf(value, "%lf", &attrs->k_bend_cubic);
-  get_attribute(&value, "d_coulomb", m, instance); if (value) sscanf(value, "%lf", &attrs->d_coulomb);
-  get_attribute(&value, "friction_vel_tol", m, instance); if (value) sscanf(value, "%lf", &friction_vel_tol);
-
-  // Apply logic: specific values (x/y) override general values.
-  attrs->k_bend_x = (k_bend_x >= 0) ? k_bend_x : ((k_bend >= 0) ? k_bend : 0);
-  attrs->k_bend_y = (k_bend_y >= 0) ? k_bend_y : ((k_bend >= 0) ? k_bend : 0);
-  attrs->d_bend_x = (d_bend_x >= 0) ? d_bend_x : ((d_bend >= 0) ? d_bend : 0);
-  attrs->d_bend_y = (d_bend_y >= 0) ? d_bend_y : ((d_bend >= 0) ? d_bend : 0);
-
-  attrs->friction_vel_tol_inv = 1.0 / (friction_vel_tol > 1e-9 ? friction_vel_tol : 1e-9);
-}
-
-// `init` callback: called when mjData is created.
-// This version is hardened to be compatible with both XML and MjSpec compilation.
-int anisotropic_init(const mjModel* m, mjData* d, int instance) {
-    AnisotropicAttrs* attrs = (AnisotropicAttrs*)malloc(sizeof(AnisotropicAttrs));
-    if (!attrs) {
-        mju_error("Could not allocate memory for plugin attributes.");
+// init callback: This is called when mjData is created.
+static int AnisotropicJointInit(const mjModel* m, mjData* d, int plugin_id) {
+    // Allocate and initialize the plugin state
+    AnisotropicJointState* state = (AnisotropicJointState*)malloc(sizeof(AnisotropicJointState));
+    if (!state) {
+        mju_error("Could not allocate memory for plugin state.");
         return -1;
     }
-    
-    read_attributes(m, instance, attrs);
-    
-    // ROBUST joint finding logic for MjSpec compatibility
-    attrs->joint_id = -1;
-    attrs->actuator_id = -1;
-    
-    // Method 1: Direct instance matching (works with XML)
+    memset(state, 0, sizeof(AnisotropicJointState));
+
+    // --- Read configuration attributes from the MJCF model ---
+    const char* B11_char = mj_getPluginConfig(m, plugin_id, "B11");
+    const char* B22_char = mj_getPluginConfig(m, plugin_id, "B22");
+    const char* B33_char = mj_getPluginConfig(m, plugin_id, "B33");
+    const char* k0_x_char = mj_getPluginConfig(m, plugin_id, "k0_x");
+    const char* k0_y_char = mj_getPluginConfig(m, plugin_id, "k0_y");
+    const char* k0_z_char = mj_getPluginConfig(m, plugin_id, "k0_z");
+    // BUG FIX: Read the new segment_length attribute
+    const char* segment_length_char = mj_getPluginConfig(m, plugin_id, "segment_length");
+
+    state->B11 = get_numeric_attribute(B11_char);
+    state->B22 = get_numeric_attribute(B22_char);
+    state->B33 = get_numeric_attribute(B33_char);
+    state->k0[0] = get_numeric_attribute(k0_x_char);
+    state->k0[1] = get_numeric_attribute(k0_y_char);
+    state->k0[2] = get_numeric_attribute(k0_z_char);
+    // BUG FIX: Store segment_length
+    state->segment_length = get_numeric_attribute(segment_length_char);
+
+
+    // --- Find the associated joint by searching through actuators ---
+    state->joint_id = -1;
     for (int i = 0; i < m->nu; ++i) {
-        if (m->actuator_plugin[i] == instance) {
+        if (m->actuator_plugin[i] == plugin_id) {
             if (m->actuator_trntype[i] == mjTRN_JOINT) {
                 int jnt_id = m->actuator_trnid[i*2];
-                if (jnt_id >= 0 && jnt_id < m->njnt && m->jnt_type[jnt_id] == mjJNT_BALL) {
-                    attrs->joint_id = jnt_id;
-                    attrs->actuator_id = i;
-                    attrs->joint_qposadr = m->jnt_qposadr[jnt_id];
-                    attrs->joint_dofadr = m->jnt_dofadr[jnt_id];
-                    d->plugin_data[instance] = (uintptr_t)attrs;
-                    return 0;
+                if (jnt_id >= 0 && m->jnt_type[jnt_id] == mjJNT_BALL) {
+                    state->joint_id = jnt_id;
+                    state->actuator_id = i;
+                    state->joint_qposadr = m->jnt_qposadr[jnt_id];
+                    state->joint_dofadr = m->jnt_dofadr[jnt_id];
+                    // Store the state pointer in mjData's plugin_data field
+                    d->plugin_data[plugin_id] = (uintptr_t)state;
+                    return 0; // Success
                 }
             }
         }
     }
-    
-    // Method 2: Fallback search by plugin name (for MjSpec)
-    // This is a simplified fallback. A more robust implementation might be needed
-    // if multiple instances of the same plugin type target different joints.
-    int ball_joint_count = 0;
-    int found_actuator_id = -1;
-    int found_joint_id = -1;
 
-    for (int i = 0; i < m->njnt; ++i) {
-        if (m->jnt_type[i] == mjJNT_BALL) {
-            // Check if this joint is targeted by an actuator using this plugin type
-            for (int act_idx = 0; act_idx < m->nu; ++act_idx) {
-                if (m->actuator_trntype[act_idx] == mjTRN_JOINT && m->actuator_trnid[act_idx*2] == i) {
-                    if (m->actuator_plugin[act_idx] == instance) {
-                         ball_joint_count++;
-                         found_joint_id = i;
-                         found_actuator_id = act_idx;
-                    }
-                }
-            }
-        }
-    }
-    
-    if (ball_joint_count == 1) {
-        attrs->joint_id = found_joint_id;
-        attrs->actuator_id = found_actuator_id;
-        attrs->joint_qposadr = m->jnt_qposadr[found_joint_id];
-        attrs->joint_dofadr = m->jnt_dofadr[found_joint_id];
-        d->plugin_data[instance] = (uintptr_t)attrs;
-        return 0;
-    }
-    
-    // If we reach here, something is wrong
     mju_warning("Anisotropic joint plugin: Could not find unique target ball joint for this instance.");
-    free(attrs);
-    d->plugin_data[instance] = 0; // Ensure data pointer is null
-    return -1;
+    free(state);
+    return -1; // Failure
 }
 
-// `destroy` callback: called when mjData is freed.
-void anisotropic_destroy(mjData* d, int instance) {
-  if (d->plugin_data[instance]) {
-    free((void*)d->plugin_data[instance]);
-    d->plugin_data[instance] = 0;
-  }
+// destroy callback: called when mjData is freed.
+static void AnisotropicJointDestroy(mjData* d, int plugin_id) {
+    if (d->plugin_data[plugin_id]) {
+        free((void*)d->plugin_data[plugin_id]);
+        d->plugin_data[plugin_id] = 0;
+    }
 }
 
-// `reset` callback: called during mj_resetData.
-void anisotropic_reset(const mjModel* m, double* plugin_state, void* plugin_data, int instance) {
-  // This plugin is stateless, so there is nothing to do.
+// compute callback: called at each simulation step
+static void AnisotropicJointCompute(const mjModel* m, mjData* d, int plugin_id, int capability_bit) {
+    if (!(capability_bit & mjPLUGIN_ACTUATOR)) {
+        return;
+    }
+
+    AnisotropicJointState* state = (AnisotropicJointState*)d->plugin_data[plugin_id];
+    if (!state || state->joint_id == -1) {
+        return;
+    }
+
+    const mjtNum* quat = d->qpos + state->joint_qposadr;
+
+    mjtNum current_kappa[3];
+    mju_quat2Vel(current_kappa, quat, 1.0);
+
+    // BUG FIX: Calculate joint stiffness (k = B/L)
+    mjtNum inv_len = (state->segment_length > 1e-9) ? 1.0 / state->segment_length : 0.0;
+    mjtNum k_bend_x = state->B11 * inv_len;
+    mjtNum k_bend_y = state->B22 * inv_len;
+    mjtNum k_tor = state->B33 * inv_len;
+
+    mjtNum kappa_error[3];
+    mju_sub3(kappa_error, current_kappa, state->k0);
+
+    mjtNum torque[3];
+    // BUG FIX: Use the calculated joint stiffness
+    torque[0] = k_bend_x * kappa_error[0];
+    torque[1] = k_bend_y * kappa_error[1];
+    torque[2] = k_tor * kappa_error[2];
+
+    int dof_adr = state->joint_dofadr;
+    d->qfrc_passive[dof_adr + 0] -= torque[0];
+    d->qfrc_passive[dof_adr + 1] -= torque[1];
+    d->qfrc_passive[dof_adr + 2] -= torque[2];
+
+    d->ctrl[state->actuator_id] = 0;
 }
 
-// `nstate` callback: returns the size of the plugin's state in mjData.
-// This plugin is stateless, so we return 0. This is a REQUIRED callback.
-int anisotropic_nstate(const mjModel* m, int instance) {
-  return 0;
+// reset callback
+static void AnisotropicJointReset(const mjModel* m, double* plugin_state, void* plugin_data, int plugin_id) {
+    // This plugin is stateless in mjData.plugin_state, so nothing to do.
 }
 
-// Fast tanh approximation using a Pade approximant.
-static inline mjtNum fast_tanh(mjtNum x) {
-    mjtNum x2 = x * x;
-    return x * (27 + x2) / (27 + 9 * x2);
+// nstate callback
+static int AnisotropicJointNstate(const mjModel* m, int instance) {
+    return 0;
 }
 
-// `compute` callback: called during each physics step.
-void anisotropic_compute(const mjModel* m, mjData* d, int instance, int capability_bit) {
-  if (!(capability_bit & mjPLUGIN_ACTUATOR)) {
-    return;
-  }
-
-  const AnisotropicAttrs* attrs = (const AnisotropicAttrs*)d->plugin_data[instance];
-  if (!attrs || attrs->joint_id == -1) {
-    return;
-  }
-  
-  const mjtNum* quat = d->qpos + attrs->joint_qposadr;
-  const mjtNum* ang_vel = d->qvel + attrs->joint_dofadr;
-
-  mjtNum local_ang_vel[3];
-  mju_rotVecQuat(local_ang_vel, ang_vel, quat);
-  
-  // Stiffness model using quaternion components (small-angle approximation).
-  const mjtNum qx = quat[1];
-  const mjtNum qy = quat[2];
-  const mjtNum qz = quat[3];
-  mjtNum local_stiffness_torque[3] = {
-    -qx * (attrs->k_bend_x + attrs->k_bend_cubic * qx * qx),
-    -qy * (attrs->k_bend_y + attrs->k_bend_cubic * qy * qy),
-    -qz * attrs->k_tor
-  };
-  mju_scl(local_stiffness_torque, local_stiffness_torque, 2.0, 3);
-
-  mjtNum local_damping_torque[3] = {
-    -attrs->d_bend_x * local_ang_vel[0] - attrs->d_coulomb * fast_tanh(local_ang_vel[0] * attrs->friction_vel_tol_inv),
-    -attrs->d_bend_y * local_ang_vel[1] - attrs->d_coulomb * fast_tanh(local_ang_vel[1] * attrs->friction_vel_tol_inv),
-    -attrs->d_tor * local_ang_vel[2]     - attrs->d_coulomb * fast_tanh(local_ang_vel[2] * attrs->friction_vel_tol_inv)
-  };
-
-  mjtNum local_total_torque[3];
-  mju_add(local_total_torque, local_damping_torque, local_stiffness_torque, 3);
-  
-  mjtNum inv_quat[4];
-  mju_negQuat(inv_quat, quat);
-  mjtNum global_torque[3];
-  mju_rotVecQuat(global_torque, local_total_torque, inv_quat);
-
-  // The computed torque must be added to `qfrc_applied` for passive forces.
-  mju_addTo(d->qfrc_applied + attrs->joint_dofadr, global_torque, 3);
-}
-
-// =================================================================================================
-//  Plugin registration
-// =================================================================================================
-
-const char* const attributes[] = {
-  "k_bend", "d_bend",
-  "k_bend_x", "d_bend_x",
-  "k_bend_y", "d_bend_y",
-  "k_tor", "d_tor",
-  "k_bend_cubic", "d_coulomb", "friction_vel_tol"
-};
+// --- Plugin Registration ---
+// BUG FIX: Add "segment_length" to the list of recognized attributes
+const char* const attributes[] = {"B11", "B22", "B33", "k0_x", "k0_y", "k0_z", "segment_length"};
 
 mjpPlugin anisotropic_joint_plugin = {
-  .name = "user.joint.anisotropic.advanced",
-  .nattribute = sizeof(attributes) / sizeof(attributes[0]),
-  .attributes = attributes,
-  .capabilityflags = mjPLUGIN_ACTUATOR,
-  .needstage = mjSTAGE_POS,
-  .nstate = anisotropic_nstate, // Assign the nstate callback
-  .init = anisotropic_init,
-  .destroy = anisotropic_destroy,
-  .reset = anisotropic_reset,
-  .compute = anisotropic_compute,
+    .name = "user.joint.anisotropic.advanced",
+    .nattribute = sizeof(attributes) / sizeof(attributes[0]),
+    .attributes = attributes,
+    .capabilityflags = mjPLUGIN_ACTUATOR,
+    .needstage = mjSTAGE_POS,
+    .nstate = AnisotropicJointNstate,
+    .init = AnisotropicJointInit,
+    .destroy = AnisotropicJointDestroy,
+    .reset = AnisotropicJointReset,
+    .compute = AnisotropicJointCompute,
 };
 
 void mjplugins_register(void) {
-  mjp_registerPlugin(&anisotropic_joint_plugin);
+    mjp_registerPlugin(&anisotropic_joint_plugin);
 }
 
 #ifdef _WIN32
-  #include <windows.h>
-  BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
-      mjplugins_register();
+    #include <windows.h>
+    BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+        if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+            mjplugins_register();
+        }
+        return TRUE;
     }
-    return TRUE;
-  }
 #else
-  __attribute__((constructor))
-  void constructor_library(void) {
-    mjplugins_register();
-  }
+    __attribute__((constructor))
+    void constructor_library(void) {
+        mjplugins_register();
+    }
 #endif
