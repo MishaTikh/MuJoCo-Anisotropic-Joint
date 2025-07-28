@@ -114,15 +114,5 @@ except Exception as e:
     # It is recommended to exit if the plugin cannot be loaded
     # as any model using it will fail to compile.
 
-# Now it is safe to load any model that uses 'user.joint.anisotropic.advanced'
-# model = mujoco.MjModel.from_xml_string(...)
-```
-
-### 6.2. Generating the Model
-Your Python code that generates the MJCF model must be updated to:
-
-Set a damping value on the <joint> tag itself. This should be calculated based on the critical damping for the joint.
-
-Add a <plugin> actuator for each joint.
-
-Populate the <config> keys with the correct physical parameters (B11, B33, segment_length, etc.) for each specific joint, as shown in the example above.
+# Now it is safe to load the model
+# model = mujoco.MjModel.from_xml_path(...)
