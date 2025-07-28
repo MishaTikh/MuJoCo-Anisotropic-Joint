@@ -4,7 +4,7 @@ This repository contains a C-based engine plugin for MuJoCo that implements an a
 
 ## 1. Overview
 
-This plugin extends MuJoCo's physics capabilities by providing a custom force model for any `ball` joint in an MJCF model. It replaces the joint's default stiffness with a custom model based on the **constitutive laws of Cosserat rod theory**. This allows for a more physically-grounded simulation where stiffness is defined by material properties (like `EI` and `GJ`) rather than abstract joint spring coefficients.
+This plugin extends MuJoCo's physics capabilities by providing a custom force model for any `ball` joint in an MJCF model. It replaces the joint's default stiffness with a custom model based on the **Cosserat rod theory**. This allows for a more physically-grounded simulation where stiffness is defined by material properties (like `EI` and `GJ`) rather than abstract joint spring coefficients.
 
 A key feature of this model is the ability to define an **intrinsic curvature**, allowing parts of the model to have a naturally curved or twisted resting shape.
 
