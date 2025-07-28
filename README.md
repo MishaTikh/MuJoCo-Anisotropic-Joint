@@ -1,6 +1,6 @@
 # MuJoCo Plugin: Advanced Anisotropic Ball Joint (Cosserat Rod Model)
 
-This repository contains a high-performance C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for high-fidelity simulations of complex flexible bodies, such as medical catheters or soft robots, where physically-accurate bending and twisting behaviors are required.
+This repository contains a C-based engine plugin for MuJoCo that implements an advanced, anisotropic ball joint. It is designed for simulations of complex flexible bodies, such as medical catheters or soft robots, where physically-accurate bending and twisting behaviors are required.
 
 ## 1. Overview
 
@@ -84,8 +84,10 @@ The plugin is configured via key-value pairs. All parameters are optional and de
       <config key="segment_length" value="0.1"/>  </plugin>
   </actuator>
 </mujoco>
+```
 
 ## 6. Python Integration
+
 Integrating the plugin into a Python application involves two steps: loading the compiled library and generating the correct XML.
 
 ### 6.1. Loading the Plugin Library
@@ -93,6 +95,7 @@ Before you can load a model that uses the plugin, you must first load the compil
 
 Python
 
+```
 import mujoco
 import os
 
@@ -113,6 +116,7 @@ except Exception as e:
 
 # Now it is safe to load any model that uses 'user.joint.anisotropic.advanced'
 # model = mujoco.MjModel.from_xml_string(...)
+```
 
 ### 6.2. Generating the Model
 Your Python code that generates the MJCF model must be updated to:
